@@ -2,15 +2,13 @@ name: Keep Supabase Project Active
 
 on:
   schedule:
-    - cron: '0 0 * * *'
+    - cron: '45 3 * * *'
   workflow_dispatch: 
 
 jobs:
   ping_supabase:
     runs-on: ubuntu-latest
     steps:
-      - name: Random Delay
-        run: sleep $(( (RANDOM % 57600) + 1 ))
       - name: Send Ping Request
         run: |
           curl -X GET "${{ secrets.BIKEMATH_URL }}/rest/v1/feedback?limit=1" \

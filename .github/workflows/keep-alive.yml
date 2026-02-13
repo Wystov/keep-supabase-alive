@@ -1,16 +1,97 @@
-name: Keep Supabase Project Active
+name: Monitor Supabase Feedback
 
 on:
   schedule:
-    - cron: "*/5 * * * *"
+    # 5 random-looking times throughout the day (UTC)
+    - cron: "12 7 * * *"   # Morning
+    - cron: "45 11 * * *"  # Before lunch
+    - cron: "23 15 * * *"  # Afternoon
+    - cron: "08 19 * * *"  # Evening
+    - cron: "50 23 * * *"  # Night
   workflow_dispatch: 
 
 jobs:
-  ping_supabase:
+  check_feedback:
     runs-on: ubuntu-latest
     steps:
-      - name: Send Ping Request
+      - name: Randomizer & Delay
+        id: config
         run: |
-          curl -X GET "${{ secrets.BIKEMATH_URL }}/rest/v1/feedback?limit=1" \
-          -H "apikey: ${{ secrets.BIKEMATH_ANON_KEY }}" \
-          -H "Authorization: Bearer ${{ secrets.BIKEMATH_ANON_KEY }}"
+          # MATH:
+          # 5 runs per day * 3 days = 15 runs total.
+          # To execute approx once every 3 days, we need a 1 in 15 chance.
+          
+          # Check if triggered manually (workflow_dispatch)
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+             echo "Manual trigger detected. Skipping randomizer."
+             echo "should_run=true" >> $GITHUB_OUTPUT
+             exit 0
+          fi
+
+          # Random logic: 0 to 14
+          CHANCE=$(( RANDOM % 15 ))
+          
+          if [ $CHANCE -eq 0 ]; then
+            echo "should_run=true" >> $GITHUB_OUTPUT
+            
+            # Random delay up to 20 minutes (1200 seconds) for natural spread
+            delay=$(( RANDOM % 1200 ))
+            echo "Bingo! Random check selected. Waiting ${delay}s..."
+            sleep $delay
+          else
+            echo "Skipping check this time (Rolled $CHANCE, needed 0)."
+            echo "should_run=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Read & Notify
+        # Run if randomizer said 'true' OR if triggered manually
+        if: steps.config.outputs.should_run == 'true'
+        env:
+          SB_URL: ${{ secrets.BIKEMATH_URL }}
+          SB_KEY: ${{ secrets.BIKEMATH_ANON_KEY }}
+          TG_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TG_CHAT: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          echo "--- Reading Supabase Data ---"
+
+          # 1. FETCH: Get ONLY unverified feedback
+          # Filter: verified is false
+          RESPONSE=$(curl -s -X GET "$SB_URL/rest/v1/feedback?verified=is.false&select=*" \
+            -H "apikey: $SB_KEY" \
+            -H "Authorization: Bearer $SB_KEY")
+
+          # Check if response is empty array
+          if [ "$RESPONSE" == "[]" ]; then
+            echo "No unverified feedback found."
+            exit 0
+          fi
+
+          echo "Found unverified feedback. Processing..."
+
+          # 2. LOOP: Iterate through each feedback item
+          echo "$RESPONSE" | jq -c '.[]' | while read -r row; do
+            
+            # Extract fields
+            ID=$(echo "$row" | jq -r '.id')
+            CONTENT=$(echo "$row" | jq -r '.content') 
+
+            echo "Processing ID: $ID"
+
+            # 3. CONSTRUCT JSON PAYLOAD
+            # Using jq to safely build JSON with variables
+            TG_PAYLOAD=$(jq -n \
+              --arg chat_id "$TG_CHAT" \
+              --arg text_content "$CONTENT" \
+              --arg id "$ID" \
+              '{
+                chat_id: $chat_id, 
+                parse_mode: "HTML",
+                text: ("🔔 <b>New Feedback</b>\n\n" + $text_content + "\n\n<i>ID: " + $id + "</i>")
+              }')
+
+            # 4. SEND TO TELEGRAM
+            curl -s -X POST "https://api.telegram.org/bot$TG_TOKEN/sendMessage" \
+              -H "Content-Type: application/json" \
+              -d "$TG_PAYLOAD" > /dev/null
+            
+          done
